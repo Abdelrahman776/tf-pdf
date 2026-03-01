@@ -67,6 +67,7 @@ export interface LayoutArtifactImageBlock {
 
 export interface LayoutArtifactPage {
   page_number: number;
+  render_image_url?: string;
   layout: Record<string, unknown>;
   text_blocks: PageBlock[];
   image_blocks: LayoutArtifactImageBlock[];
@@ -216,4 +217,12 @@ export async function adminGetJobEvents(
 
 export function resultUrl(jobId: string): string {
   return `${API_BASE}/v1/jobs/${jobId}/result`;
+}
+
+export function uploadedFileContentUrl(fileId: string): string {
+  return `${API_BASE}/v1/files/${fileId}/content`;
+}
+
+export function resultPageImageUrl(jobId: string, pageNumber: number): string {
+  return `${API_BASE}/v1/jobs/${jobId}/result/pages/${pageNumber}/image`;
 }

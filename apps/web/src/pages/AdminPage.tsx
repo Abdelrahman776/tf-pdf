@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
-import { adminGetJobEvents, adminListJobs } from "../api";
+import { adminGetJobEvents, adminListJobs } from "../api.ts";
 
 export function AdminPage() {
   const [selectedJobId, setSelectedJobId] = useState<string>("");

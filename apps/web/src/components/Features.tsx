@@ -42,10 +42,10 @@ export default function Features() {
           {features.map((feature, index) => (
             <div
               key={index}
-              className="flex flex-col min-h-[250px] bg-tfwhite dark:bg-tfblack border border-tfblue/50 p-6 rounded-lg shadow-lg shadow-tfblue/20 transition-all duration-300 hover:-translate-y-2 hover:shadow-2xl hover:shadow-tforange/20 hover:border-tforange"
+              className="flex flex-col min-h-62.5 bg-tfwhite dark:bg-tfblack border border-tfblue/50 p-6 rounded-lg shadow-lg shadow-tfblue/20 transition-all duration-300 hover:-translate-y-2 hover:shadow-2xl hover:shadow-tforange/20 hover:border-tforange"
             >
               <div className="flex justify-center mb-6">{feature.icon}</div>
-              <div className="flex-grow">
+              <div className="grow">
                 <h3 className="text-xl font-bold text-center text-tfblack dark:text-tfwhite mb-4">
                   {feature.title}
                 </h3>

@@ -1,7 +1,7 @@
-import BeforeAfterSection from "../components/BeforeAfter";
-import Features from "../components/Features";
-import Hero from "../components/Hero";
-import Pricing from "../components/Pricing";
+import BeforeAfterSection from "../components/BeforeAfter.tsx";
+import Features from "../components/Features.tsx";
+import Hero from "../components/Hero.tsx";
+import Pricing from "../components/Pricing.tsx";
 
 export function HomePage() {
   return (

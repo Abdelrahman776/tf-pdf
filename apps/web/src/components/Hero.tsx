@@ -1,30 +1,32 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { useMutation } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
-import { createJob, uploadFile } from "../api";
+import { uploadFile } from "../api.ts";
 import { UploadCloud } from "lucide-react";
-
-function handleButtonClick() {
-  document.getElementById("file-input")?.click();
-}
 
 export default function Hero() {
   const navigate = useNavigate();
   const [isDragging, setIsDragging] = useState(false);
   const [file, setFile] = useState<File | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const { mutate, isPending, isSuccess, isError, error } = useMutation({
-    mutationFn: async (selectedFile: File) => {
-      const uploaded = await uploadFile(selectedFile);
-      return createJob({
+    mutationFn: uploadFile,
+    onSuccess: (uploaded, selectedFile) => {
+      const params = new URLSearchParams({
         file_id: uploaded.file_id,
-        mode: "scanned_pdf",
-        preserve_layout: true,
-        language: "en",
+        filename: selectedFile.name,
+        content_type: selectedFile.type || uploaded.content_type,
       });
-    },
-    onSuccess: (job) => {
-      navigate(`/jobs/${job.id}`);
+
+      navigate(`/jobs/new?${params.toString()}`, {
+        state: {
+          uploaded,
+          localPreviewUrl: URL.createObjectURL(selectedFile),
+          filename: selectedFile.name,
+          contentType: selectedFile.type,
+        },
+      });
     },
     onError: (mutationError) => {
       console.error("Upload error:", mutationError);
@@ -32,15 +34,19 @@ export default function Hero() {
   });
 
   const handleFileInput = (selectedFile: File): void => {
-    const validTypes = [
+    const validTypes = new Set([
       "application/pdf",
       "image/jpeg",
       "image/jpg",
       "image/png",
       "image/webp",
-    ];
+    ]);
+    const validExtensions = new Set(["pdf", "jpg", "jpeg", "png", "webp"]);
+    const extension = selectedFile.name.split(".").pop()?.toLowerCase() ?? "";
+    const isAcceptedType = validTypes.has(selectedFile.type.toLowerCase());
+    const isAcceptedExtension = validExtensions.has(extension);
 
-    if (!validTypes.includes(selectedFile.type)) {
+    if (!isAcceptedType && !isAcceptedExtension) {
       alert("Please upload a PDF, JPG, PNG, or WEBP file.");
       return;
     }
@@ -99,7 +105,7 @@ export default function Hero() {
   }, []);
 
   return (
-    <section className="bg-tfwhite dark:bg-tfblack flex min-h-[85vh] flex-col justify-start gap-24 pt-20 pb-4">
+    <section className="bg-tfwhite dark:bg-tfblack flex min-h-[78vh] flex-col justify-start gap-16 pt-14 pb-2">
       {isDragging && (
         <div className="bg-tfblue/20 fixed inset-0 z-50 flex items-center justify-center backdrop-blur-sm">
           <div className="rounded-lg bg-white p-8 text-center shadow-lg dark:bg-gray-800">
@@ -130,13 +136,14 @@ export default function Hero() {
           <input
             type="file"
             id="file-input"
+            ref={fileInputRef}
             className="hidden"
             onChange={handleFileChange}
             accept=".pdf,.jpg,.jpeg,.png,.webp"
           />
           <button
             disabled={isPending}
-            onClick={handleButtonClick}
+            onClick={() => fileInputRef.current?.click()}
             className="bg-tforange focus:ring-tforange cursor-pointer rounded-xl px-6 py-6 font-bold text-white transition-colors hover:bg-orange-500 focus:ring-2 focus:ring-offset-2 focus:outline-none sm:px-12 md:text-xl"
           >
             {isPending ? (

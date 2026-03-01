@@ -41,7 +41,7 @@ export default function Pricing() {
           return (
             <div
               key={index}
-              className={`border rounded p-6 flex flex-col text-center w-[85%] md:w-[360px] ${
+              className={`border rounded p-6 flex flex-col text-center w-[85%] md:w-90 ${
                 plan.highlighted
                   ? "border-tforange shadow-lg shadow-tforange/40"
                   : "border-tfblue shadow-lg shadow-tfblue/20"
@@ -55,7 +55,7 @@ export default function Pricing() {
                 {plan.price}
               </p>
 
-              <div className="flex-grow">
+              <div className="grow">
                 <ul className="space-y-2 mb-6 text-left">
                   {plan.features.map((feature, i) => {
                     return (

@@ -26,7 +26,7 @@ export default function BeforeAfterSection() {
             <img
               draggable="false"
               alt="Before processing"
-              className="w-[400px] h-[400px]  bg-white shadow-sm"
+              className="w-100 h-100 bg-white shadow-sm"
               src="/handwritten.webp"
             />
           </div>
@@ -44,7 +44,7 @@ export default function BeforeAfterSection() {
             <img
               draggable="false"
               alt="after processing"
-              className="w-[400px] h-[400px]  bg-white shadow-sm"
+              className="w-100 h-100 bg-white shadow-sm"
               src="/converted.webp"
             />
           </div>

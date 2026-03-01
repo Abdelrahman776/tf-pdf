@@ -1,4 +1,5 @@
 import { Github, BookOpenIcon, MailIcon, HeartIcon } from "lucide-react";
+import { Link } from "react-router-dom";
 
 export default function Footer() {
   const currentYear = new Date().getFullYear();
@@ -10,7 +11,7 @@ export default function Footer() {
     },
     {
       name: "API Docs",
-      href: "http://127.0.0.1:8000/docs",
+      href: "http://127.0.0.1:8010/docs",
       icon: <BookOpenIcon className="size-4" />,
     },
     {
@@ -34,10 +35,10 @@ export default function Footer() {
     <footer className="bg-tfwhite dark:bg-tfblack py-8 border-t border-gray-200 dark:border-gray-900">
       <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
         <div className="flex flex-col items-center">
-          <div className="mb-4 text-2xl font-bold leading-none">
+          <Link to="/" className="mb-4 text-2xl font-bold leading-none" aria-label="Go to home">
             <span className="text-tfblue dark:text-tfblue">TrueForm</span>
             <span className="text-tforange dark:text-tforange">PDF</span>
-          </div>
+          </Link>
           <div className="mb-4 flex flex-wrap justify-center gap-3">
             {footerLinks.map((link, index) => (
               <a

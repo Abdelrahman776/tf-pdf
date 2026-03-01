@@ -10,6 +10,7 @@ import {
   JobResponse,
   patchPage,
   resultUrl,
+  uploadedFileContentUrl,
   uploadFile,
   UploadResponse,
 } from "../api.ts";
@@ -42,6 +43,75 @@ type JobSetupState = {
 
 type WorkflowPhase = "before" | "after";
 type PreviewTab = "original" | "result";
+
+function withCacheBuster(url: string, token?: string): string {
+  if (!token) return url;
+  const separator = url.includes("?") ? "&" : "?";
+  return `${url}${separator}v=${encodeURIComponent(token)}`;
+}
+
+function parsePatchPageTargets(spec: string, availablePages: number[]): number[] {
+  const normalized = spec.trim().toLowerCase();
+  if (!normalized) {
+    throw new Error("Enter pages to edit (for example: 1, 3-5, or all).");
+  }
+
+  const availableSet = new Set(availablePages);
+  const hasAvailablePages = availablePages.length > 0;
+
+  if (normalized === "all") {
+    if (!hasAvailablePages) {
+      throw new Error("Cannot use 'all' until job pages are available.");
+    }
+    return [...availablePages].sort((a, b) => a - b);
+  }
+
+  const tokens = normalized.split(",").map((token) => token.trim()).filter(Boolean);
+  if (tokens.length === 0) {
+    throw new Error("Enter pages to edit (for example: 1, 3-5, or all).");
+  }
+
+  const selected = new Set<number>();
+  for (const token of tokens) {
+    if (token === "all") {
+      throw new Error("Use either 'all' or specific pages, not both.");
+    }
+
+    const rangeMatch = token.match(/^(\d+)\s*-\s*(\d+)$/);
+    if (rangeMatch) {
+      const start = Number(rangeMatch[1]);
+      const end = Number(rangeMatch[2]);
+      if (start < 1 || end < 1 || end < start) {
+        throw new Error(`Invalid range: ${token}`);
+      }
+      for (let pageNumber = start; pageNumber <= end; pageNumber += 1) {
+        selected.add(pageNumber);
+      }
+      continue;
+    }
+
+    if (/^\d+$/.test(token)) {
+      const pageNumber = Number(token);
+      if (pageNumber < 1) {
+        throw new Error(`Invalid page number: ${token}`);
+      }
+      selected.add(pageNumber);
+      continue;
+    }
+
+    throw new Error(`Invalid page selector: ${token}`);
+  }
+
+  const parsed = [...selected].sort((a, b) => a - b);
+  if (hasAvailablePages) {
+    const invalidPage = parsed.find((pageNumber) => !availableSet.has(pageNumber));
+    if (invalidPage) {
+      throw new Error(`Page ${invalidPage} is not available for this job.`);
+    }
+  }
+
+  return parsed;
+}
 
 /* ------------------------------------------------------------------ */
 /*  Small reusable pieces                                              */
@@ -150,6 +220,7 @@ export function JobPage() {
   const { jobId: routeJobId } = useParams<{ jobId: string }>();
   const queryClient = useQueryClient();
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const pendingPreviewUrlRef = useRef<string | undefined>(undefined);
 
   /* --- Incoming state from Hero upload ----------------------------- */
   const incomingState = (location.state as JobSetupState | null) ?? null;
@@ -187,11 +258,14 @@ export function JobPage() {
   );
 
   const [mode, setMode] = useState<InputMode>("scanned_pdf");
-  const [languages, setLanguages] = useState<string[]>(["en"]);
+  const [language, setLanguage] = useState("en");
   const [preserveLayout, setPreserveLayout] = useState(true);
   const [userPrompt, setUserPrompt] = useState("");
   const [instruction, setInstruction] = useState("");
+  const [patchPageTargets, setPatchPageTargets] = useState("1");
+  const [patchPageTargetsError, setPatchPageTargetsError] = useState<string | null>(null);
   const [isDragActive, setIsDragActive] = useState(false);
+  const [isDownloadingResult, setIsDownloadingResult] = useState(false);
 
   const [phase, setPhase] = useState<WorkflowPhase>(routeJobId ? "after" : "before");
   const [previewTab, setPreviewTab] = useState<PreviewTab>("original");
@@ -228,26 +302,33 @@ export function JobPage() {
   const reUploadMutation = useMutation({
     mutationFn: uploadFile,
     onSuccess: (uploaded, file) => {
-      if (previewUrl?.startsWith("blob:")) URL.revokeObjectURL(previewUrl);
-      const nextPreviewUrl = URL.createObjectURL(file);
+      const nextPreviewUrl = pendingPreviewUrlRef.current;
+      const nextContentType = file.type || uploaded.content_type;
       setCurrentUpload(uploaded);
-      setPreviewUrl(nextPreviewUrl);
+      if (nextPreviewUrl) {
+        setPreviewUrl(nextPreviewUrl);
+      }
       setFileName(file.name);
-      setContentType(file.type || uploaded.content_type);
+      setContentType(nextContentType);
       setPreviewTab("original");
       setPhase("before");
+      pendingPreviewUrlRef.current = undefined;
 
-      if (activeJobId) {
-        navigate(`/jobs/new`, {
-          replace: true,
-          state: buildJobState(
-            uploaded,
-            nextPreviewUrl,
-            file.name,
-            file.type || uploaded.content_type,
-          ),
-        });
-      }
+      const params = new URLSearchParams({
+        file_id: uploaded.file_id,
+        filename: file.name,
+        content_type: nextContentType,
+      });
+
+      navigate(`/jobs/new?${params.toString()}`, {
+        replace: true,
+        state: buildJobState(
+          uploaded,
+          nextPreviewUrl ?? previewUrl,
+          file.name,
+          nextContentType,
+        ),
+      });
     },
   });
 
@@ -259,7 +340,7 @@ export function JobPage() {
         file_id: fileId,
         mode,
         preserve_layout: preserveLayout,
-        language: languages.join(","),
+        language,
         user_prompt: userPrompt || undefined,
       });
     },
@@ -275,9 +356,27 @@ export function JobPage() {
   });
 
   const patchMutation = useMutation({
-    mutationFn: () => patchPage(activeJobId!, 1, instruction),
-    onSuccess: () => {
+    mutationFn: async ({
+      nextInstruction,
+      pageNumbers,
+    }: {
+      nextInstruction: string;
+      pageNumbers: number[];
+    }) => {
+      if (!activeJobId) throw new Error("No active job selected.");
+      let latest: JobResponse | null = null;
+      for (const pageNumber of pageNumbers) {
+        latest = await patchPage(activeJobId, pageNumber, nextInstruction);
+      }
+      if (!latest) {
+        throw new Error("No page updates were applied.");
+      }
+      return latest;
+    },
+    onSuccess: (updatedJob) => {
       setInstruction("");
+      setPatchPageTargetsError(null);
+      queryClient.setQueryData(["job", activeJobId], updatedJob);
       queryClient.invalidateQueries({ queryKey: ["job", activeJobId] });
     },
   });
@@ -301,16 +400,103 @@ export function JobPage() {
   });
 
   const job = jobQuery.data;
+  const persistedFileId = currentUpload?.file_id ?? job?.file_id;
+  const originalPreviewCacheToken = useMemo(() => {
+    if (!persistedFileId) return undefined;
+    return `${persistedFileId}-${fileName ?? ""}`;
+  }, [persistedFileId, fileName]);
+  const resultPreviewCacheToken = useMemo(() => {
+    if (!activeJobId) return undefined;
+    const artifactPages = artifactQuery.data?.pages ?? [];
+    const pageToken = artifactPages
+      .map((page) => page.page_number)
+      .filter((num): num is number => Number.isInteger(num) && num > 0)
+      .join("-");
+    return `${activeJobId}-${pageToken}`;
+  }, [activeJobId, artifactQuery.data?.pages]);
+  const originalPreviewUrl = useMemo(() => {
+    const hasBlobPreview = Boolean(previewUrl?.startsWith("blob:"));
+    if (persistedFileId) {
+      return withCacheBuster(
+        uploadedFileContentUrl(persistedFileId),
+        originalPreviewCacheToken,
+      );
+    }
+    if (hasBlobPreview) return previewUrl;
+    if (previewUrl) return previewUrl;
+    return undefined;
+  }, [originalPreviewCacheToken, persistedFileId, previewUrl]);
+  const resultDownloadFilename = useMemo(() => {
+    const sourceName = fileName ?? currentUpload?.filename ?? "result";
+    const extensionIndex = sourceName.lastIndexOf(".");
+    const baseName = extensionIndex > 0 ? sourceName.slice(0, extensionIndex) : sourceName;
+    return `${baseName}_tfpdf.pdf`;
+  }, [currentUpload?.filename, fileName]);
+  const patchablePageNumbers = useMemo(
+    () =>
+      (job?.pages ?? [])
+        .map((page) => page.page_number)
+        .filter((num): num is number => Number.isInteger(num) && num > 0),
+    [job?.pages],
+  );
 
   /* --- Handlers ---------------------------------------------------- */
-  const handleReUpload = (file: File) => {
-    const validExts = new Set(["pdf", "jpg", "jpeg", "png", "webp"]);
-    const ext = file.name.split(".").pop()?.toLowerCase() ?? "";
-    if (!validExts.has(ext)) {
+  const handleFileInput = (selectedFile: File) => {
+    const validTypes = new Set([
+      "application/pdf",
+      "image/jpeg",
+      "image/jpg",
+      "image/png",
+      "image/webp",
+    ]);
+    const validExtensions = new Set(["pdf", "jpg", "jpeg", "png", "webp"]);
+    const extension = selectedFile.name.split(".").pop()?.toLowerCase() ?? "";
+    const loweredType = selectedFile.type.toLowerCase();
+    const isAcceptedType = loweredType ? validTypes.has(loweredType) : false;
+    const isAcceptedExtension = validExtensions.has(extension);
+
+    if (!isAcceptedType && !isAcceptedExtension) {
       alert("Please upload a PDF, JPG, PNG, or WEBP file.");
       return;
     }
-    reUploadMutation.mutate(file);
+
+    if (previewUrl?.startsWith("blob:")) {
+      URL.revokeObjectURL(previewUrl);
+    }
+
+    const nextPreviewUrl = URL.createObjectURL(selectedFile);
+    pendingPreviewUrlRef.current = nextPreviewUrl;
+
+    navigate("/jobs/new", {
+      replace: true,
+      state: {
+        localPreviewUrl: nextPreviewUrl,
+        filename: selectedFile.name,
+        contentType: selectedFile.type,
+      } satisfies JobSetupState,
+    });
+
+    setMode("scanned_pdf");
+    setLanguage("en");
+    setPreserveLayout(true);
+    setUserPrompt("");
+    setInstruction("");
+    setPatchPageTargets("1");
+    setPatchPageTargetsError(null);
+    createMutation.reset();
+    patchMutation.reset();
+    setCurrentUpload(null);
+    setPreviewUrl(nextPreviewUrl);
+    setFileName(selectedFile.name);
+    setContentType(selectedFile.type || contentType);
+    setPreviewTab("original");
+    setPhase("before");
+
+    reUploadMutation.mutate(selectedFile, {
+      onError: () => {
+        pendingPreviewUrlRef.current = undefined;
+      },
+    });
   };
 
   const onUploadZoneDragOver = (event: DragEvent<HTMLDivElement>) => {
@@ -328,7 +514,7 @@ export function JobPage() {
     setIsDragActive(false);
     const droppedFile = event.dataTransfer.files?.[0];
     if (!droppedFile) return;
-    handleReUpload(droppedFile);
+    handleFileInput(droppedFile);
   };
 
   const onConvert = (e: FormEvent) => {
@@ -339,7 +525,91 @@ export function JobPage() {
   const onPatch = (e: FormEvent) => {
     e.preventDefault();
     if (!instruction.trim()) return;
-    patchMutation.mutate();
+
+    try {
+      const pageNumbers = parsePatchPageTargets(patchPageTargets, patchablePageNumbers);
+      setPatchPageTargetsError(null);
+      patchMutation.mutate({
+        nextInstruction: instruction.trim(),
+        pageNumbers,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Invalid page selector.";
+      setPatchPageTargetsError(message);
+    }
+  };
+
+  const onDownloadResult = async () => {
+    if (!activeJobId || isDownloadingResult) return;
+    setIsDownloadingResult(true);
+    try {
+      const response = await fetch(
+        withCacheBuster(resultUrl(activeJobId), resultPreviewCacheToken ?? activeJobId),
+      );
+      if (!response.ok) {
+        throw new Error("Failed to download result PDF.");
+      }
+      const blob = await response.blob();
+      const objectUrl = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = objectUrl;
+      link.download = resultDownloadFilename;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(objectUrl);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Download failed.";
+      alert(message);
+    } finally {
+      setIsDownloadingResult(false);
+    }
+  };
+
+  const onResetForNewConversion = () => {
+    const uploadForReset =
+      currentUpload ??
+      (job
+        ? {
+            file_id: job.file_id,
+            filename: fileName ?? "uploaded-file",
+            content_type: contentType ?? "application/octet-stream",
+            size_bytes: 0,
+          }
+        : null);
+
+    setMode("scanned_pdf");
+    setLanguage("en");
+    setPreserveLayout(true);
+    setUserPrompt("");
+    setInstruction("");
+    setPatchPageTargets("1");
+    setPatchPageTargetsError(null);
+    setPhase("before");
+    setPreviewTab("original");
+
+    if (!uploadForReset) {
+      setCurrentUpload(null);
+      navigate("/jobs/new", { replace: true, state: undefined });
+      return;
+    }
+
+    const nextFileName = fileName ?? uploadForReset.filename;
+    const nextContentType = contentType ?? uploadForReset.content_type;
+    setCurrentUpload(uploadForReset);
+    setFileName(nextFileName);
+    setContentType(nextContentType);
+
+    const params = new URLSearchParams({
+      file_id: uploadForReset.file_id,
+      filename: nextFileName,
+      content_type: nextContentType,
+    });
+
+    navigate(`/jobs/new?${params.toString()}`, {
+      replace: true,
+      state: buildJobState(uploadForReset, previewUrl, nextFileName, nextContentType),
+    });
   };
 
   /* ================================================================ */
@@ -347,7 +617,7 @@ export function JobPage() {
   /* ================================================================ */
 
   return (
-    <section className="job-page">
+    <section className="job-page ">
       {/* ============ LEFT COLUMN — Controls ======================== */}
       <div className="card job-card">
         {/* Phase toggle tabs */}
@@ -388,7 +658,7 @@ export function JobPage() {
                 className="hidden"
                 accept=".pdf,.jpg,.jpeg,.png,.webp"
                 onChange={(e) => {
-                  if (e.target.files?.[0]) handleReUpload(e.target.files[0]);
+                  if (e.target.files?.[0]) handleFileInput(e.target.files[0]);
                 }}
               />
 
@@ -447,24 +717,16 @@ export function JobPage() {
 
               {/* Language */}
               <label className="job-label">
-                <span>Language (select one or more)</span>
+                <span>Language</span>
                 <select
                   className="job-select"
-                  multiple
-                  value={languages}
-                  onChange={(e) =>
-                    setLanguages(
-                      Array.from(e.target.selectedOptions, (option) => option.value),
-                    )
-                  }
+                  value={language}
+                  onChange={(e) => setLanguage(e.target.value)}
                 >
                   <option value="en">English</option>
                   <option value="ar">Arabic</option>
                   <option value="it">Italian</option>
                 </select>
-                <span className="job-help-text">
-                  Hold Ctrl (Windows) to select multiple languages.
-                </span>
               </label>
 
               {/* Preserve layout */}
@@ -493,7 +755,7 @@ export function JobPage() {
               <button
                 type="submit"
                 className="job-btn job-btn--primary w-full"
-                disabled={createMutation.isPending || !currentUpload}
+                disabled={createMutation.isPending || reUploadMutation.isPending || !currentUpload}
               >
                 {createMutation.isPending ? (
                   <>
@@ -535,6 +797,7 @@ export function JobPage() {
               <>
                 {/* Status + progress */}
                 <div className="job-status-block">
+                  <h4 className="job-mini-heading">Processing Timeline</h4>
                   <div className="flex items-center justify-between mb-1">
                     <StatusBadge status={job.status} />
                     <span className="text-xs text-gray-500 dark:text-gray-400">
@@ -544,32 +807,22 @@ export function JobPage() {
                   <ProgressBar value={job.progress} />
                 </div>
 
-                {/* Timeline (always visible as part of progress) */}
-                <div className="job-timeline-section">
-                  <h4 className="job-mini-heading">Processing Timeline</h4>
-                  <div className="timeline">
-                    {(eventsQuery.data ?? []).length === 0 ? (
-                      <div className="timeline-item">
-                        <span className="muted">Waiting for events…</span>
-                      </div>
-                    ) : (
-                      (eventsQuery.data ?? []).map((event, i) => (
-                        <div className="timeline-item" key={`${event.at}-${i}`}>
-                          <div className="timeline-time">
-                            {new Date(event.at).toLocaleTimeString()}
-                          </div>
-                          <div className="timeline-text">
-                            <b>{event.status}</b> — {event.message}
-                          </div>
-                        </div>
-                      ))
-                    )}
-                  </div>
-                </div>
-
                 {/* Chat / edit instruction */}
                 <form onSubmit={onPatch} className="job-edit-form">
                   <h4 className="job-mini-heading">Edit / Refine</h4>
+                  <label className="job-label">
+                    <span>Pages to edit</span>
+                    <input
+                      className="job-select"
+                      value={patchPageTargets}
+                      onChange={(e) => {
+                        setPatchPageTargets(e.target.value);
+                        if (patchPageTargetsError) setPatchPageTargetsError(null);
+                      }}
+                      placeholder="all, 1,3,5-7"
+                    />
+                  </label>
+                  <p className="muted text-xs">Use all, comma-separated pages, or ranges like 2-5.</p>
                   <textarea
                     className="job-textarea"
                     rows={2}
@@ -599,7 +852,29 @@ export function JobPage() {
                       {(patchMutation.error as Error).message}
                     </p>
                   )}
+                  {patchPageTargetsError && <p className="error text-sm">{patchPageTargetsError}</p>}
                 </form>
+
+                <Disclosure label="Processing Timeline">
+                  <div className="timeline">
+                    {(eventsQuery.data ?? []).length === 0 ? (
+                      <div className="timeline-item">
+                        <span className="muted">Waiting for events…</span>
+                      </div>
+                    ) : (
+                      (eventsQuery.data ?? []).map((event, i) => (
+                        <div className="timeline-item" key={`${event.at}-${i}`}>
+                          <div className="timeline-time">
+                            {new Date(event.at).toLocaleTimeString()}
+                          </div>
+                          <div className="timeline-text">
+                            <b>{event.status}</b> — {event.message}
+                          </div>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                </Disclosure>
 
                 {/* Hidden-by-default previews */}
                 <Disclosure label="Page JSON Preview">
@@ -657,7 +932,7 @@ export function JobPage() {
       </div>
 
       {/* ============ RIGHT COLUMN — File Preview =================== */}
-      <div className="card job-card">
+      <div className="card job-card ">
         {/* Preview tab toggle */}
         <div className="job-preview-tabs">
           <button
@@ -671,7 +946,7 @@ export function JobPage() {
             type="button"
             className={`job-preview-tab ${previewTab === "result" ? "job-preview-tab--active" : ""}`}
             onClick={() => setPreviewTab("result")}
-            disabled={!activeJobId}
+            disabled={!activeJobId || phase === "before" || reUploadMutation.isPending}
           >
             Result
           </button>
@@ -680,7 +955,7 @@ export function JobPage() {
         {/* Original preview */}
         {previewTab === "original" && (
           <OriginalPreview
-            previewUrl={previewUrl}
+            previewUrl={originalPreviewUrl}
             contentType={contentType}
             fallbackName={fileName}
           />
@@ -695,27 +970,37 @@ export function JobPage() {
               </div>
             ) : job?.status === "completed" ? (
               <div>
-                <iframe
-                  title="result"
-                  className="pdf-frame"
-                  src={resultUrl(activeJobId)}
-                />
+                <p className="job-result-filename muted">{resultDownloadFilename}</p>
+                <div className="job-result-preview-window">
+                  <iframe
+                    title="result"
+                    className="pdf-frame job-result-frame"
+                    src={withCacheBuster(resultUrl(activeJobId), resultPreviewCacheToken ?? activeJobId)}
+                  />
+                </div>
                 <div className="mt-3 flex gap-2">
-                  <a
+                  <button
+                    type="button"
                     className="job-btn job-btn--primary inline-flex"
-                    href={resultUrl(activeJobId)}
-                    download={`trueform-${activeJobId}.pdf`}
+                    onClick={onDownloadResult}
+                    disabled={isDownloadingResult}
                   >
-                    <Download className="h-4 w-4" />
-                    Download PDF
-                  </a>
+                    {isDownloadingResult ? (
+                      <>
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                        Downloading…
+                      </>
+                    ) : (
+                      <>
+                        <Download className="h-4 w-4" />
+                        Download PDF
+                      </>
+                    )}
+                  </button>
                   <button
                     type="button"
                     className="job-btn job-btn--secondary"
-                    onClick={() => {
-                      setPhase("before");
-                      setPreviewTab("original");
-                    }}
+                    onClick={onResetForNewConversion}
                   >
                     <RefreshCw className="h-4 w-4" />
                     New Conversion

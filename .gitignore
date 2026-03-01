@@ -1,0 +1,48 @@
+# ─── Python ───────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+*.whl
+.venv/
+venv/
+env/
+ENV/
+
+# ─── Environment Variables ────────────────────────────────────────────────────
+.env
+*.env.local
+*.env.*.local
+
+# ─── Node / Vite ──────────────────────────────────────────────────────────────
+node_modules/
+dist/
+.cache/
+*.tsbuildinfo
+
+# ─── Data & Uploads ───────────────────────────────────────────────────────────
+apps/data/uploads/*
+apps/data/results/*
+!apps/data/uploads/.gitkeep
+!apps/data/results/.gitkeep
+
+# ─── Docker ───────────────────────────────────────────────────────────────────
+*.env.docker
+
+# ─── IDE & OS ─────────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# ─── Logs ─────────────────────────────────────────────────────────────────────
+*.log
+logs/
+apps/data

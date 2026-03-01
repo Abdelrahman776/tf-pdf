@@ -1,0 +1,15 @@
+@import url("https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&display=swap");
+@import "tailwindcss";
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+@theme {
+  --color-tforange: #f96f29;
+  --color-tfblue: #0e4f88;
+  --color-tfblack: #111111;
+  --color-tfwhite: #f7f3eb;
+}
+
+* {
+  font-family: "Space Grotesk", system-ui, -apple-system, sans-serif;
+}

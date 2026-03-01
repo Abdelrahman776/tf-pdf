@@ -169,6 +169,44 @@ def save_file(file_id: str, filename: str, content_type: str, size_bytes: int, p
     conn.close()
 
 
+def get_file_snapshot(file_id: str) -> dict | None:
+    if _using_postgres():
+        conn = _pg_conn()
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT id, filename, content_type, size_bytes, path, created_at
+            FROM files
+            WHERE id = %s
+            """,
+            (file_id,),
+        )
+        row = cur.fetchone()
+        conn.close()
+        if not row:
+            return None
+        return {
+            "id": row[0],
+            "filename": row[1],
+            "content_type": row[2],
+            "size_bytes": row[3],
+            "path": row[4],
+            "created_at": row[5].isoformat() if row[5] else None,
+        }
+
+    conn = _conn()
+    row = conn.execute(
+        """
+        SELECT id, filename, content_type, size_bytes, path, created_at
+        FROM files
+        WHERE id = ?
+        """,
+        (file_id,),
+    ).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
 def save_job_snapshot(job_id: str, file_id: str, mode: str, status: str, progress: int, message: str, result_file: str | None, created_at: str, updated_at: str) -> None:
     if _using_postgres():
         conn = _pg_conn()

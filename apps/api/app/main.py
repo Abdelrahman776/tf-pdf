@@ -9,8 +9,17 @@ from fastapi import BackgroundTasks, FastAPI, File, Header, HTTPException, Reque
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 
+try:
+    import pypdfium2 as pdfium
+
+    PDFIUM_AVAILABLE = True
+except Exception:
+    pdfium = None
+    PDFIUM_AVAILABLE = False
+
 from .config import settings
 from .persistence import (
+    get_file_snapshot,
     get_job_snapshot,
     get_page_snapshot,
     init_db,
@@ -102,6 +111,25 @@ async def upload_file(file: UploadFile = File(...)) -> UploadResponse:
         content_type=uploaded.content_type,
         size_bytes=uploaded.size_bytes,
     )
+
+
+@app.get("/v1/files/{file_id}/content")
+def get_uploaded_file_content(file_id: str):
+    uploaded = FILES.get(file_id)
+    if uploaded is not None:
+        file_path = uploaded.path
+        content_type = uploaded.content_type
+    else:
+        snap = get_file_snapshot(file_id)
+        if not snap:
+            raise HTTPException(status_code=404, detail="file not found")
+        file_path = Path(str(snap["path"]))
+        content_type = str(snap.get("content_type") or "application/octet-stream")
+
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail="file content missing")
+
+    return FileResponse(file_path, media_type=content_type)
 
 
 @app.post("/v1/jobs", response_model=JobResponse)
@@ -286,6 +314,40 @@ def patch_page(job_id: str, page_number: int, request: PatchRequest) -> JobRespo
 
 @app.get("/v1/jobs/{job_id}/result")
 def get_result(job_id: str):
+    result_path = _resolve_result_path(job_id)
+    result_filename = _resolve_result_filename(job_id)
+    return FileResponse(
+        result_path,
+        media_type="application/pdf",
+        filename=result_filename,
+        content_disposition_type="inline",
+    )
+
+
+def _resolve_result_filename(job_id: str) -> str:
+    source_filename = "result"
+
+    job = JOBS.get(job_id)
+    file_id = job.file_id if job else None
+    if not file_id:
+        snap = get_job_snapshot(job_id)
+        if snap:
+            file_id = str(snap.get("file_id") or "") or None
+
+    if file_id:
+        uploaded = FILES.get(file_id)
+        if uploaded and uploaded.filename:
+            source_filename = uploaded.filename
+        else:
+            file_snap = get_file_snapshot(file_id)
+            if file_snap and file_snap.get("filename"):
+                source_filename = str(file_snap["filename"])
+
+    source_stem = Path(source_filename).stem or "result"
+    return f"{source_stem}_tfpdf.pdf"
+
+
+def _resolve_result_path(job_id: str) -> Path:
     job = JOBS.get(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="job not found")
@@ -300,7 +362,38 @@ def get_result(job_id: str):
     if not result_path.exists():
         raise HTTPException(status_code=404, detail="result file missing")
 
-    return FileResponse(result_path, media_type="application/pdf")
+    return result_path
+
+
+@app.get("/v1/jobs/{job_id}/result/pages/{page_number}/image")
+def get_result_page_image(job_id: str, page_number: int):
+    if page_number < 1:
+        raise HTTPException(status_code=400, detail="page_number must be >= 1")
+    if not PDFIUM_AVAILABLE:
+        raise HTTPException(status_code=503, detail="pdf rendering is unavailable")
+
+    result_path = _resolve_result_path(job_id)
+    render_dir = DATA_DIR / "results" / "page_renders" / job_id
+    render_dir.mkdir(parents=True, exist_ok=True)
+    render_path = render_dir / f"page_{page_number}.png"
+
+    if not render_path.exists():
+        try:
+            pdf = pdfium.PdfDocument(str(result_path))
+            page_index = page_number - 1
+            if page_index >= len(pdf):
+                raise HTTPException(status_code=404, detail="result page not found")
+
+            page = pdf[page_index]
+            bitmap = page.render(scale=2)
+            image = bitmap.to_pil()
+            image.save(render_path, format="PNG")
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"failed rendering result page: {exc}")
+
+    return FileResponse(render_path, media_type="image/png")
 
 
 @app.get("/v1/jobs/{job_id}/layout-artifact")
@@ -320,6 +413,12 @@ def get_layout_artifact(job_id: str, request: Request):
         page_number = page.get("page_number")
         if not isinstance(page_number, int):
             continue
+
+        render_path = DATA_DIR / "layout_artifacts" / "page_renders" / job_id / f"page_{page_number}.png"
+        if render_path.exists():
+            page["render_image_url"] = (
+                f"{base_url}/v1/jobs/{job_id}/layout-artifact/renders/page/{page_number}"
+            )
 
         image_blocks = page.get("image_blocks", [])
         if isinstance(image_blocks, list):
@@ -354,6 +453,15 @@ def get_layout_artifact(job_id: str, request: Request):
                 )
 
     return payload
+
+
+@app.get("/v1/jobs/{job_id}/layout-artifact/renders/page/{page_number}")
+def get_layout_artifact_render(job_id: str, page_number: int):
+    render_path = DATA_DIR / "layout_artifacts" / "page_renders" / job_id / f"page_{page_number}.png"
+    if not render_path.exists():
+        raise HTTPException(status_code=404, detail="page render not found")
+
+    return FileResponse(render_path, media_type="image/png")
 
 
 @app.get("/v1/jobs/{job_id}/layout-artifact/images/page/{page_number}/file/{filename}")
